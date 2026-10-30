@@ -1,0 +1,135 @@
+# The release of the mod: the .steinmod on a GitHub release, with the mod's own index (steinmods.json), which the
+# Stein Client and the installer read at https://github.com/<RELEASE_REPO>/releases/latest/download/steinmods.json.
+# An official mod is one whose index is listed in "sources" of the stein.json of Stein-Project/installer (changed by hand,
+# only when a mod joins or leaves); nothing here writes to that file.
+#
+#   git tag v0.1.11 && git push origin v0.1.11            stable: the tag must be v<"version" of steinmod.json>
+#   git tag v0.1.11-rc.1 && git push origin v0.1.11-rc.1  test version: a pre-release, and its entry in the "test"
+#                                                         block of the latest stable release's steinmods.json, which
+#                                                         only the Stein Client's test channel reads
+#
+# Run by hand (Actions > release > Run workflow) it is a dry run (ensaio): it builds, checks the changelog, keeps the
+# .steinmod as a workflow artifact and prints the release notes and the index, publishing nothing.
+#
+# On a tag:
+#   1. the changelog is required before anything is built: changelog/<version>.en_US.md (.pt_BR.md optional; en_US goes on
+#      the release);
+#   2. release v<version> on RELEASE_REPO with <Name>.steinmod, SHA256SUMS.txt (the plain build: mods are not
+#      obfuscated) and, on a stable release, steinmods.json (id, modId, name, file, version, url, sha256, loader,
+#      description);
+#   3. a test version only: its entry in the "test" block of the latest stable release's steinmods.json.
+# Every step is idempotent: running the same tag again publishes nothing twice. Only the workflow's own token is used.
+#
+# Like build.yml, it needs the Stein SDK version of build.gradle released on Stein-Project/sdk (0.2.3).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # The release of this repository, with the workflow's own token.
+      contents: write
+    env:
+      # --- what changes from mod to mod ---
+      INDEX_ID: minimap
+      INDEX_DESCRIPTION: Minimapa com mapa ou radar.
+      # An open mod is released in its own repository.
+      RELEASE_REPO: ${{ github.repository }}
+      # ---
+      ENSAIO: ${{ github.event_name != 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # First on purpose: a release without its notes stops in seconds, not after the build.
+      - name: Version and changelog
+        id: version
+        run: |
+          if [ -z "$RELEASE_REPO" ]; then
+            msg="no release repository: set the RELEASE_REPO variable of this repository (Settings > Secrets and variables > Actions)"
+            [ "$ENSAIO" = true ] || { echo "::error::$msg"; exit 1; }
+            echo "::warning::$msg"; echo "RELEASE_REPO=OWNER/REPO-NOT-SET" >> "$GITHUB_ENV"
+          fi
+          v="$(bash .github/scripts/mod.sh version)"
+          teste=
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            case "$GITHUB_REF_NAME" in
+              "v$v") ;;
+              "v$v"-*) teste="${GITHUB_REF_NAME#"v$v"-}" ;;
+              *) echo "::error::tag $GITHUB_REF_NAME does not match the steinmod.json version $v (v$v or v$v-<label>)"; exit 1 ;;
+            esac
+            [[ -z "$teste" || "$teste" =~ ^[A-Za-z0-9.]+$ ]] || { echo "::error::invalid test label: $teste"; exit 1; }
+          fi
+          bash .github/scripts/changelog.sh check changelog "$v"
+          {
+            echo "version=$v"
+            echo "tag=v$v${teste:+-$teste}"
+            echo "teste=$teste"
+          } >> "$GITHUB_OUTPUT"
+          echo "$INDEX_ID $v${teste:+ (test: $teste)} -> $RELEASE_REPO"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build and check
+        run: ./gradlew build
+
+      - name: Files and notes
+        run: |
+          bash .github/scripts/mod.sh files
+          ls -la dist
+          echo "::group::release notes"; cat notes.md; echo "::endgroup::"
+
+      - name: Keep the files (dry run)
+        if: env.ENSAIO == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.INDEX_ID }}-${{ steps.version.outputs.version }}
+          path: |
+            dist/
+            notes.md
+          retention-days: 14
+
+      - name: What it would publish (dry run)
+        if: env.ENSAIO == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "release $TAG -> $RELEASE_REPO:"; ls dist
+          echo "steinmods.json (the mod's index, on the release):"
+          bash .github/scripts/mod.sh steinmods
+          cat dist/steinmods.json
+          echo "(dry run: nothing was published)"
+
+      - name: Release (${{ env.RELEASE_REPO }})
+        if: env.ENSAIO != 'true'
+        env:
+          # The workflow token for a release in this repository; RELEASE_TOKEN (a PAT) when RELEASE_REPO is another one.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TESTE: ${{ steps.version.outputs.teste }}
+        run: bash .github/scripts/mod.sh release
+
+      - name: Test index (steinmods.json of the latest stable release)
+        if: env.ENSAIO != 'true' && steps.version.outputs.teste != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          TESTE: ${{ steps.version.outputs.teste }}
+        run: bash .github/scripts/mod.sh test-index

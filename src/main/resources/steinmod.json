@@ -1,0 +1,13 @@
+{
+  "id": "steinminimap",
+  "name": "Minimap",
+  "version": "0.1.0",
+  "author": "X4vieer",
+  "description": "A minimap on the HUD grid: the terrain from above or radar only, with players, mobs and spawners. Some servers do not allow it: check the rules of where you play.",
+  "entry": "dev.xavier.stein.minimap.SteinMinimap",
+  "loader": "0.1.28",
+  "features": [
+    "minimap"
+  ],
+  "source": "https://github.com/Stein-Project/minimap/releases/latest/download/steinmods.json"
+}
